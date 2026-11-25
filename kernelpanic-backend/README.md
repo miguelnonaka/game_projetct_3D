@@ -1,0 +1,167 @@
+<p align="center">
+  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
+</p>
+
+[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
+[circleci-url]: https://circleci.com/gh/nestjs/nest
+
+  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
+    <p align="center">
+<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
+<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
+<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
+<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
+<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
+<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
+<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
+  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
+    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
+  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
+</p>
+  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
+  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+
+## Description
+
+[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+
+O procedimento de instalação, configuração e operação da plataforma está no
+[Manual de instalação e operação do DATA PANIC](../docs/manual-instalacao-operacao.md).
+
+## Project setup
+
+```bash
+$ npm install
+```
+
+## Compile and run the project
+
+```bash
+# development
+$ npm run start
+
+# watch mode
+$ npm run start:dev
+
+# production mode
+$ npm run start:prod
+```
+
+## Run tests
+
+Os testes ficam em `test/`, separados por natureza:
+
+- `test/unit/` — serviços, DTOs, validators e guards isolados, com mocks. Não precisa de banco.
+- `test/functional/` — sobem a aplicação (ou o serviço de ingestão) e batem via HTTP
+  (supertest). Algumas substituem o `PrismaService` por um mock; as de licitações,
+  escopo, tratamento e autenticação usam o banco de teste. `broker.spec.ts` só roda
+  com `MQTT_URL_TESTE` apontando para um Mosquitto (o do docker-compose).
+- `test/helpers.ts`, `test/fixtures.ts`, `test/bootstrap.ts` — apoio compartilhado.
+
+Os testes funcionais nunca usam o banco de desenvolvimento: rodam num banco próprio,
+por padrão o de `DATABASE_URL` com o sufixo `_test` (ex.: `kernelpanic_test`). Antes de
+cada execução, `test/global-setup.ts` roda `prisma migrate reset` nele, então basta o
+Postgres do `docker-compose.yml` estar de pé, e o banco é criado e migrado sozinho. Para
+usar outro banco, defina `DATABASE_URL_TESTE`; o nome dele precisa terminar em `_test`.
+
+```bash
+# testes unitários
+$ npm run test
+
+# testes funcionais
+$ npm run test:functional
+
+# cobertura (unitários)
+$ npm run test:cov
+```
+
+## Cadeia de dados: broker, ingestão e tratamento
+
+A telemetria não passa pela API. Este pacote tem três processos (formato do tópico, do payload e garantias em [docs/mqtt-topico-payload.md](../docs/mqtt-topico-payload.md)):
+
+| Processo | Código | Como subir | Porta |
+| --- | --- | --- | --- |
+| API (consultas, CRUD, auditoria) | `src/` | `npm run start:dev` | `PORT` (3001) |
+| Ingestão: assina o broker e só grava `leituras_brutas`; aceita `POST /ingestao/telemetria` como alternativa | `servicos/ingestao/` | `npm run build:servicos && npm run start:ingestao` | `INGESTAO_PORTA` (3002) |
+| Tratamento: lê `leituras_brutas` em lotes e grava `medidas` e `leituras_erro` | `servicos/tratamento/` | `npm run build:servicos && npm run start:tratamento` | `TRATAMENTO_PORTA` (3003) |
+
+O broker (Mosquitto) sobe com `docker compose up -d broker`; a configuração fica em [`../broker`](../broker). Para ver a cadeia andando, `npm run simulador` cria estações de teste e publica leituras no broker.
+
+### Chave por estação
+
+Cada estação tem uma chave de ingestão, que é a senha dela no broker (o usuário é o `vid`) e o header `x-chave-estacao` da rota HTTP. A chave de outra estação, uma chave errada ou um `vid` inexistente são recusados.
+
+- A chave é gerada no cadastro (`POST /estacoes`, só os admins) e volta **uma única vez**, no campo `chaveIngestao` da resposta. O banco guarda só o hash (`estacoes.chaveIngestaoHash`), e o broker, o dele.
+- Para trocar a chave, ou gerar a de uma estação cadastrada antes dela existir: `POST /estacoes/:id/chave-ingestao`. A anterior para de valer na hora, na API e no broker. Na tela de estações, o menu da estação tem "Gerar chave" / "Regenerar chave".
+- Mudar o `vid` apaga a chave (ela é do `vid` antigo): a estação precisa de chave nova.
+- `possuiChaveIngestao` na resposta da estação indica se ela já tem chave.
+- Em desenvolvimento, `INGESTAO_ROTA_ABERTA=true` com `NODE_ENV=development` abre a rota HTTP sem chave. Em qualquer outro `NODE_ENV`, essa opção faz a ingestão não subir.
+
+### Estação inativa
+
+Uma estação com `statusOperacional` `INATIVA` (remoção lógica, edição do status ou licitação encerrada) continua podendo enviar telemetria, mas o dado não alimenta dashboard nem alertas:
+
+- O pacote é **guardado em `leituras_brutas`** (procedência), como o de qualquer estação.
+- O tratamento **não gera medida** dele, e por isso nenhum alarme: os alarmes nascem do trigger do banco quando uma medida entra.
+- Na rota HTTP a resposta continua **202**, com `estacaoInativa: true` (nas estações ativas é `false`). Por que 202 e não 409: o 409 faria o datalogger tratar o envio como falha e reenviar para sempre um dado que não vai ser aceito.
+- Reativar a estação volta a gerar medidas a partir dali. O que chegou enquanto ela estava inativa fica só em `leituras_brutas`.
+
+## Escopo por licitação
+
+Todo dado pertence a uma licitação, e o filtro fica no backend: `src/autenticacao/escopo-licitacao.ts` (o que cada perfil enxerga) e `src/autenticacao/guarda-perfil.guard.ts` (perfil exigido por rota e bloqueio de escrita de licitação não vigente). Perfis e regras em [docs/regras-licitacao.md](../docs/regras-licitacao.md). O usuário criado por `npm run db:seed` é `ADMIN_TECSUS`.
+
+## Deployment
+
+When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+
+If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+
+```bash
+$ npm install -g @nestjs/mau
+$ mau deploy
+```
+
+With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+
+## Observability
+
+In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
+
+[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
+
+- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
+- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
+- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
+- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
+- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
+- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
+- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
+- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
+
+## Resources
+
+Check out a few resources that may come in handy when working with NestJS:
+
+- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
+- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
+- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
+- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
+- Auto-instrument your application with [NestJS Observer](https://observer.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
+- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
+- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
+- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
+- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+
+## Support
+
+Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+
+## Stay in touch
+
+- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
+- Website - [https://nestjs.com](https://nestjs.com/)
+- Twitter - [@nestframework](https://twitter.com/nestframework)
+
+## License
+
+Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).

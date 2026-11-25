@@ -1,0 +1,166 @@
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { StatusAlarme } from '../generated/prisma/client';
+import type { Prisma } from '../generated/prisma/client';
+import { garantirAcessoLicitacao, licitacaoDoEscopo } from '../autenticacao/escopo-licitacao';
+import type { UsuarioLogado } from '../autenticacao/payload-jwt.interface';
+import { PrismaService } from '../prisma/prisma.service';
+import { EstacoesProximasService } from '../regiao/estacoes-proximas.service';
+import type { Coordenadas } from '../regiao/regiao';
+import { AlarmeHistoricoRespostaDto } from './dto/alarme-historico-resposta.dto';
+import { AtualizarStatusAlarmeDto } from './dto/atualizar-status-alarme.dto';
+import { ListaAlarmesRespostaDto } from './dto/lista-alarmes-resposta.dto';
+import { ListarAlarmesQueryDto } from './dto/listar-alarmes-query.dto';
+import { OpcoesFiltroRespostaDto } from './dto/opcoes-filtro-resposta.dto';
+
+const INCLUDE_HISTORICO = {
+  medida: true,
+  reconhecidoPor: { select: { id: true, nome: true } },
+  resolvidoPor: { select: { id: true, nome: true } },
+  alerta: {
+    include: {
+      parametro: {
+        include: {
+          estacao: true,
+          tipoParametro: true,
+        },
+      },
+    },
+  },
+} satisfies Prisma.AlarmeInclude;
+
+// O alarme só avança no ciclo de vida: reabrir um alarme reconhecido ou
+// resolvido apagaria o registro de que alguém já o tratou.
+const ORDEM_STATUS: Record<StatusAlarme, number> = {
+  ABERTO: 0,
+  RECONHECIDO: 1,
+  RESOLVIDO: 2,
+};
+
+/**
+ * Campos de ação gravados junto com o novo status (as "ações correlacionadas"
+ * do relatório de incidentes). Resolver direto um alarme aberto também conta
+ * como reconhecimento, feito pela mesma pessoa e no mesmo instante: quem
+ * resolveu necessariamente tomou conhecimento.
+ */
+export function dadosDaTransicao(
+  statusAtual: StatusAlarme,
+  dto: AtualizarStatusAlarmeDto,
+  usuarioId: string,
+  agora: Date,
+): Prisma.AlarmeUncheckedUpdateInput {
+  const dados: Prisma.AlarmeUncheckedUpdateInput = { status: dto.status };
+  if (statusAtual === StatusAlarme.ABERTO) {
+    dados.reconhecidoEm = agora;
+    dados.reconhecidoPorId = usuarioId;
+  }
+  if (dto.status === StatusAlarme.RESOLVIDO) {
+    dados.resolvidoEm = agora;
+    dados.resolvidoPorId = usuarioId;
+  }
+  const observacao = dto.observacao?.trim();
+  if (observacao) dados.observacao = observacao;
+  return dados;
+}
+
+@Injectable()
+export class AlarmesService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly estacoesProximas: EstacoesProximasService,
+  ) {}
+
+  /** Como os alertas: visitante por região, usuário pela licitação, Tecsus tudo. */
+  async listarHistorico(
+    query: ListarAlarmesQueryDto,
+    regiao: Coordenadas | undefined,
+    usuario: UsuarioLogado | null,
+  ): Promise<ListaAlarmesRespostaDto> {
+    const pagina = query.pagina ?? 1;
+    const tamanho = query.tamanho ?? 50;
+
+    const where: Prisma.AlarmeWhereInput = {
+      status: query.status,
+      disparadoEm: {
+        gte: query.de ? new Date(query.de) : undefined,
+        lte: query.ate ? new Date(query.ate) : undefined,
+      },
+      alerta: {
+        licitacaoId: usuario ? licitacaoDoEscopo(usuario, query.licitacaoId) : undefined,
+        severidade: query.severidade,
+        parametro: {
+          estacaoId: await this.estacoesProximas.filtroEstacao(query.estacaoId, regiao),
+          tipoParametroId: query.tipoParametroId,
+        },
+      },
+    };
+
+    const [registros, total] = await Promise.all([
+      this.prisma.alarme.findMany({
+        where,
+        include: INCLUDE_HISTORICO,
+        orderBy: { disparadoEm: 'desc' },
+        skip: (pagina - 1) * tamanho,
+        take: tamanho,
+      }),
+      this.prisma.alarme.count({ where }),
+    ]);
+
+    return new ListaAlarmesRespostaDto(
+      registros.map((registro) => new AlarmeHistoricoRespostaDto(registro)),
+      total,
+      pagina,
+      tamanho,
+    );
+  }
+
+  /** Alarmes disparados a partir de `desde`, mais recentes primeiro (usado pelo tempo real). */
+  async buscarRecentes(desde: Date, limite = 200): Promise<AlarmeHistoricoRespostaDto[]> {
+    const registros = await this.prisma.alarme.findMany({
+      where: { disparadoEm: { gte: desde } },
+      include: INCLUDE_HISTORICO,
+      orderBy: { disparadoEm: 'desc' },
+      take: limite,
+    });
+    return registros.map((registro) => new AlarmeHistoricoRespostaDto(registro));
+  }
+
+  async buscarOpcoesFiltro(
+    regiao: Coordenadas | undefined,
+    usuario: UsuarioLogado | null,
+    licitacaoIdInformada?: string,
+  ): Promise<OpcoesFiltroRespostaDto> {
+    const id = await this.estacoesProximas.filtroEstacao(undefined, regiao);
+    const licitacaoId = usuario ? licitacaoDoEscopo(usuario, licitacaoIdInformada) : undefined;
+    const [estacoes, tiposParametro] = await Promise.all([
+      this.prisma.estacao.findMany({ where: { id, licitacaoId }, select: { id: true, nome: true }, orderBy: { nome: 'asc' } }),
+      this.prisma.tipoParametro.findMany({ where: { licitacaoId }, select: { id: true, nome: true }, orderBy: { nome: 'asc' } }),
+    ]);
+
+    return new OpcoesFiltroRespostaDto(estacoes, tiposParametro);
+  }
+
+  async atualizarStatus(id: string, dto: AtualizarStatusAlarmeDto, usuario: UsuarioLogado): Promise<AlarmeHistoricoRespostaDto> {
+    const alarme = await this.prisma.alarme.findUnique({
+      where: { id },
+      select: { status: true, alerta: { select: { licitacaoId: true } } },
+    });
+    if (!alarme) {
+      throw new NotFoundException('Alarme não encontrado');
+    }
+    garantirAcessoLicitacao(usuario, alarme.alerta.licitacaoId);
+
+    if (ORDEM_STATUS[dto.status] <= ORDEM_STATUS[alarme.status]) {
+      throw new ConflictException(
+        `Não é possível voltar o alarme de ${alarme.status} para ${dto.status}`,
+      );
+    }
+
+    const atualizado = await this.prisma.alarme.update({
+      where: { id },
+      data: dadosDaTransicao(alarme.status, dto, usuario.sub, new Date()),
+      include: INCLUDE_HISTORICO,
+    });
+
+    return new AlarmeHistoricoRespostaDto(atualizado);
+  }
+}

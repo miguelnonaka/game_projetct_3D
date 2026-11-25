@@ -1,0 +1,54 @@
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { AlarmesModule } from './alarmes/alarmes.module';
+import { AlertasModule } from './alertas/alertas.module';
+import { AuditoriaModule } from './auditoria/auditoria.module';
+import { AuditoriaAcessoMiddleware } from './auditoria/auditoria-acesso.middleware';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
+import { AutenticacaoModule } from './autenticacao/autenticacao.module';
+import { DashboardModule } from './dashboard/dashboard.module';
+import { EstacoesModule } from './estacoes/estacoes.module';
+import { LeiturasBrutasModule } from './leituras-brutas/leituras-brutas.module';
+import { LimiteRequisicoesModule } from './limite-requisicoes/limite-requisicoes.module';
+import { PrismaModule } from './prisma/prisma.module';
+import { RegiaoModule } from './regiao/regiao.module';
+import { SensoresModule } from './sensores/sensores.module';
+import { UsuariosModule } from './usuarios/usuarios.module';
+import { SaudeModule } from './saude/saude.module';
+import { LicitacoesModule } from './licitacoes/licitacoes.module';
+import { BrokerModule } from './broker/broker.module';
+import { RelatoriosModule } from './relatorios/relatorios.module';
+import { DadosAbertosModule } from './dados-abertos/dados-abertos.module';
+import { EstatisticasModule } from './estatistica/estatisticas.module';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
+    LimiteRequisicoesModule,
+    PrismaModule,
+    BrokerModule,
+    EstatisticasModule,
+    RegiaoModule,
+    UsuariosModule,
+    AutenticacaoModule,
+    AlarmesModule,
+    AlertasModule,
+    AuditoriaModule,
+    DashboardModule,
+    LicitacoesModule,
+    EstacoesModule,
+    SaudeModule,
+    LeiturasBrutasModule,
+    SensoresModule,
+    RelatoriosModule,
+    DadosAbertosModule,
+  ],
+  controllers: [AppController],
+  providers: [AppService],
+})
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(AuditoriaAcessoMiddleware).forRoutes('*');
+  }
+}
